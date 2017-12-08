@@ -178,6 +178,40 @@ impl ShotwellVFS {
         reply.ok();
     }
 
+    fn readdir_videos(&mut self, mut reply: fuse::ReplyDirectory, offset: i64) {
+        if offset < 0 {
+            reply.error(ENOENT);
+            return;
+        }
+        if offset == 0 {
+            reply.add(VIDEO, 0, FileType::Directory, ".");
+            reply.add(ROOT, 1, FileType::Directory, "..");
+        }
+        let mut idx = offset + 2;
+        let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
+        let mut statement = connection.prepare("SELECT id, filename, timestamp, title FROM VideoTable ORDER BY timestamp ASC LIMIT ?, 100").unwrap();
+        statement.bind(1, offset).unwrap();
+        while let Ok(sqlite::State::Row) = statement.next() {
+            let video_id = statement.read::<i64>(0).unwrap() as u64;
+            let inode = video_id | VIDEO;
+            let filename = statement.read::<Vec<u8>>(1).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
+            let extension = filename.rfind('.').map(|x| &filename[x+1..]).unwrap_or("");
+            let title = statement.read::<Vec<u8>>(3).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
+            if !title.is_empty() {
+                debug!("video id {} has utf name {:?}", video_id, title);
+                reply.add(inode, idx, FileType::RegularFile, format!("[{}] {}.{}", video_id, title, extension));
+                idx += 1;
+            } else {
+                let timestamp = time::at(time::Timespec{sec: statement.read::<i64>(2).unwrap(), nsec: 0});
+                let tm = timestamp.strftime("%Y-%m-%d %H:%M").unwrap();
+                debug!("video id {} title is empty, using timestamp `{}`", video_id, tm);
+                reply.add(inode, idx, FileType::RegularFile, format!("[{}] {}.{}", video_id, tm, extension));
+                idx += 1;
+            }
+        };
+        reply.ok();
+    }
+
     fn lookup_root(&mut self, name: &OsStr, reply: ReplyEntry) {
         match name.to_str() {
             Some("/") => reply.entry(&TTL, &ROOT_ATTR, 0),
@@ -211,7 +245,22 @@ impl ShotwellVFS {
             if let Ok(sqlite::State::Row) = statement.next() {
                 let timestamp = time::Timespec{sec: statement.read::<i64>(1).unwrap(), nsec: 0};
                 let filesize = statement.read::<i64>(0).unwrap() as u64;
-                reply.entry(&TTL, &make_fileattr(EVENT | id, filesize, timestamp), 0);
+                reply.entry(&TTL, &make_fileattr(PHOTO | id, filesize, timestamp), 0);
+                return;
+            }
+        }
+        reply.error(ENOENT);
+    }
+
+    fn lookup_video(&mut self, name: &OsStr, reply: ReplyEntry) {
+        if let Some(id) = self.extract_id(name) {
+            let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
+            let mut statement = connection.prepare("SELECT filesize, timestamp FROM VideoTable WHERE id = ?").unwrap();
+            statement.bind(1, id as i64).unwrap();
+            if let Ok(sqlite::State::Row) = statement.next() {
+                let timestamp = time::Timespec{sec: statement.read::<i64>(1).unwrap(), nsec: 0};
+                let filesize = statement.read::<i64>(0).unwrap() as u64;
+                reply.entry(&TTL, &make_fileattr(VIDEO | id, filesize, timestamp), 0);
                 return;
             }
         }
@@ -231,6 +280,7 @@ impl Filesystem for ShotwellVFS {
             ROOT => self.lookup_root(name, reply),
             EVENT => self.lookup_event(name, reply),
             PHOTO => self.lookup_photo(name, reply),
+            VIDEO => self.lookup_video(name, reply),
             _ => reply.error(ENOENT),
         };
     }
@@ -268,16 +318,8 @@ impl Filesystem for ShotwellVFS {
         } else {
             match inode {
                 ROOT => self.readdir_root(reply, offset),
-                PHOTO => {
-                    reply.add(PHOTO, 0, FileType::Directory, ".");
-                    reply.add(ROOT, 1, FileType::Directory, "..");
-                    reply.ok()
-                },
-                VIDEO => {
-                    reply.add(VIDEO, 0, FileType::Directory, ".");
-                    reply.add(ROOT, 1, FileType::Directory, "..");
-                    reply.ok()
-                },
+                PHOTO => self.readdir_photos(reply, offset),
+                VIDEO => self.readdir_videos(reply, offset),
                 TAG => {
                     reply.add(TAG, 0, FileType::Directory, ".");
                     reply.add(ROOT, 1, FileType::Directory, "..");
