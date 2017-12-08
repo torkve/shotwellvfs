@@ -1,0 +1,15 @@
+[package]
+name = "shotwellvfs"
+description = "Shotwell FUSE adapter"
+version = "0.1.0"
+authors = ["Vsevolod Velichko <torkvemada@sorokdva.net>"]
+keywords = ["fuse", "shotwell", "driver", "fs", "vfs"]
+license = "MIT"
+
+[dependencies]
+fuse = "*"
+sqlite = "*"
+libc = "*"
+time = "*"
+log = "*"
+env_logger = "*"
