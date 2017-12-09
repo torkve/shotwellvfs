@@ -144,6 +144,37 @@ impl ShotwellVFS {
         reply.ok();
     }
 
+    fn readdir_tags(&mut self, mut reply: fuse::ReplyDirectory, offset: i64) {
+        if offset < 0 {
+            reply.error(ENOENT);
+            return;
+        }
+        if offset == 0 {
+            reply.add(EVENT, 0, FileType::Directory, ".");
+            reply.add(ROOT, 1, FileType::Directory, "..");
+        }
+        let mut idx = offset + 2;
+
+        let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
+        let mut statement = connection.prepare("SELECT id, LTRIM(name, '/') as tname, time_created FROM TagTable WHERE INSTR(tname, '/') = 0 ORDER BY tname ASC LIMIT ?, 100").unwrap();
+        statement.bind(1, offset).unwrap();
+        while let Ok(sqlite::State::Row) = statement.next() {
+            let tag_id = statement.read::<i64>(0).unwrap() as u64;
+            let inode = tag_id | EVENT;
+            let name = statement.read::<Vec<u8>>(1).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
+            if !name.is_empty() {
+                let mut title = &name[..];
+                if title.starts_with('/') {
+                    title = &title[1..];
+                }
+                debug!("tag id {} has utf name {:?}", tag_id, title);
+                reply.add(inode, idx, FileType::Directory, format!("[{}] {}", tag_id, title));
+                idx += 1;
+            }
+        };
+        reply.ok();
+    }
+
     fn readdir_photos(&mut self, mut reply: fuse::ReplyDirectory, offset: i64) {
         if offset < 0 {
             reply.error(ENOENT);
@@ -155,7 +186,7 @@ impl ShotwellVFS {
         }
         let mut idx = offset + 2;
         let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
-        let mut statement = connection.prepare("SELECT id, filename, timestamp, title FROM PhotoTable ORDER BY timestamp ASC LIMIT ?, 100").unwrap();
+        let mut statement = connection.prepare("SELECT id, filename, timestamp, title FROM PhotoTable ORDER BY timestamp ASC, id ASC LIMIT ?, 100").unwrap();
         statement.bind(1, offset).unwrap();
         while let Ok(sqlite::State::Row) = statement.next() {
             let photo_id = statement.read::<i64>(0).unwrap() as u64;
@@ -237,6 +268,21 @@ impl ShotwellVFS {
         reply.error(ENOENT);
     }
 
+    fn lookup_tag(&mut self, name: &OsStr, reply: ReplyEntry) {
+        if let Some(id) = self.extract_id(name) {
+            let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
+            let mut statement = connection.prepare("SELECT time_created FROM TagTable WHERE id = ?").unwrap();
+            statement.bind(1, id as i64).unwrap();
+            if let Ok(sqlite::State::Row) = statement.next() {
+                let timestamp = time::Timespec{sec: statement.read::<i64>(0).unwrap(), nsec: 0};
+                reply.entry(&TTL, &make_dirattr(TAG | id, timestamp), 0);
+                return;
+            }
+        }
+        reply.error(ENOENT);
+    }
+
+
     fn lookup_photo(&mut self, name: &OsStr, reply: ReplyEntry) {
         if let Some(id) = self.extract_id(name) {
             let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
@@ -281,6 +327,7 @@ impl Filesystem for ShotwellVFS {
             EVENT => self.lookup_event(name, reply),
             PHOTO => self.lookup_photo(name, reply),
             VIDEO => self.lookup_video(name, reply),
+            TAG => self.lookup_tag(name, reply),
             _ => reply.error(ENOENT),
         };
     }
@@ -305,29 +352,15 @@ impl Filesystem for ShotwellVFS {
                inode: u64,
                fh: u64,
                offset: i64,
-               mut reply: fuse::ReplyDirectory,
+               reply: fuse::ReplyDirectory,
                ) {
-        if inode == EVENT {
-            self.readdir_events(reply, offset);
-        }
-        else if inode == PHOTO {
-            self.readdir_photos(reply, offset);
-        }
-        else if offset != 0 {
-            reply.error(ENOENT);
-        } else {
-            match inode {
-                ROOT => self.readdir_root(reply, offset),
-                PHOTO => self.readdir_photos(reply, offset),
-                VIDEO => self.readdir_videos(reply, offset),
-                TAG => {
-                    reply.add(TAG, 0, FileType::Directory, ".");
-                    reply.add(ROOT, 1, FileType::Directory, "..");
-                    reply.ok()
-                },
-                EVENT => self.readdir_events(reply, offset),
-                _ => reply.error(ENOENT)
-            }
+        match inode {
+            ROOT => self.readdir_root(reply, offset),
+            PHOTO => self.readdir_photos(reply, offset),
+            VIDEO => self.readdir_videos(reply, offset),
+            TAG => self.readdir_tags(reply, offset),
+            EVENT => self.readdir_events(reply, offset),
+            _ => reply.error(ENOENT)
         };
     }
 }
