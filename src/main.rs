@@ -25,6 +25,20 @@ enum FileId {
     VideoKind(u64),
 }
 
+trait TextField {
+    fn read_text(&self, i: usize) -> String;
+}
+
+impl<'l> TextField for sqlite::Statement<'l> {
+    fn read_text(&self, i: usize) -> String {
+        match self.read::<Vec<u8>>(i) {
+            Err(_) => String::new(),
+            Ok(x) => String::from_utf8(x).unwrap_or(String::new())
+        }
+    }
+}
+
+
 macro_rules! dir_attr(
     ( $($name:ident => $inode:ident),* ) => {
         $(
@@ -137,7 +151,7 @@ impl ShotwellVFS {
         while let Ok(sqlite::State::Row) = statement.next() {
             let event_id = statement.read::<i64>(0).unwrap() as u64;
             let inode = event_id | EVENT;
-            let name = statement.read::<Vec<u8>>(1).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
+            let name = statement.read_text(1);
             if !name.is_empty() {
                 debug!("event id {} has utf name {:?}", event_id, name);
                 reply.add(inode, idx, FileType::Directory, format!("[{}] {}", event_id, name));
@@ -170,7 +184,7 @@ impl ShotwellVFS {
         while let Ok(sqlite::State::Row) = statement.next() {
             let tag_id = statement.read::<i64>(0).unwrap() as u64;
             let inode = tag_id | EVENT;
-            let name = statement.read::<Vec<u8>>(1).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
+            let name = statement.read_text(1);
             if !name.is_empty() {
                 let mut title = &name[..];
                 if title.starts_with('/') {
@@ -200,9 +214,9 @@ impl ShotwellVFS {
         while let Ok(sqlite::State::Row) = statement.next() {
             let photo_id = statement.read::<i64>(0).unwrap() as u64;
             let inode = photo_id | PHOTO;
-            let filename = statement.read::<Vec<u8>>(1).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
+            let filename = statement.read_text(1);
             let extension = filename.rfind('.').map(|x| &filename[x+1..]).unwrap_or("");
-            let title = statement.read::<Vec<u8>>(3).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
+            let title = statement.read_text(3);
             if !title.is_empty() {
                 debug!("photo id {} has utf name {:?}", photo_id, title);
                 reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", photo_id, title, extension));
@@ -234,9 +248,9 @@ impl ShotwellVFS {
         while let Ok(sqlite::State::Row) = statement.next() {
             let video_id = statement.read::<i64>(0).unwrap() as u64;
             let inode = video_id | VIDEO;
-            let filename = statement.read::<Vec<u8>>(1).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
+            let filename = statement.read_text(1);
             let extension = filename.rfind('.').map(|x| &filename[x+1..]).unwrap_or("");
-            let title = statement.read::<Vec<u8>>(3).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
+            let title = statement.read_text(3);
             if !title.is_empty() {
                 debug!("video id {} has utf name {:?}", video_id, title);
                 reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", video_id, title, extension));
