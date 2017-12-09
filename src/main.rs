@@ -19,6 +19,12 @@ const VIDEO: u64 = 1 << 52;
 const TAG: u64 = 1 << 53;
 const EVENT: u64 = 1 << 54;
 
+enum FileId {
+    FileKind(u64),
+    DirKind(u64),
+    VideoKind(u64),
+}
+
 macro_rules! dir_attr(
     ( $($name:ident => $inode:ident),* ) => {
         $(
@@ -88,13 +94,16 @@ fn make_fileattr(inode: u64, filesize: u64, ts: Timespec) -> FileAttr {
 struct ShotwellVFS;
 
 impl ShotwellVFS {
-    fn extract_id(&self, filename: &OsStr) -> Option<u64> {
-        filename
-            .to_str()
-            .into_iter()
-            .filter(|x| x.starts_with('['))
-            .next()
-            .and_then(|x| x.find(']').and_then(|end| x[1..end].parse::<u64>().ok()))
+    fn extract_id(&self, filename: &OsStr) -> Option<FileId> {
+        let filename = filename.to_str();
+        match filename {
+            Some(x) => match x.chars().next() {
+                Some('[') => x.find(']').and_then(|end| x[1..end].parse::<u64>().map(|idx| FileId::DirKind(idx)).ok()),
+                Some('(') => x.find(')').and_then(|end| x[1..end].parse::<u64>().map(|idx| FileId::FileKind(idx)).ok()),
+                _ => None,
+            },
+            _ => None
+        }
     }
 
     fn readdir_root(&mut self, mut reply: fuse::ReplyDirectory, offset: i64) {
@@ -196,13 +205,13 @@ impl ShotwellVFS {
             let title = statement.read::<Vec<u8>>(3).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
             if !title.is_empty() {
                 debug!("photo id {} has utf name {:?}", photo_id, title);
-                reply.add(inode, idx, FileType::RegularFile, format!("[{}] {}.{}", photo_id, title, extension));
+                reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", photo_id, title, extension));
                 idx += 1;
             } else {
                 let timestamp = time::at(time::Timespec{sec: statement.read::<i64>(2).unwrap(), nsec: 0});
                 let tm = timestamp.strftime("%Y-%m-%d %H:%M").unwrap();
                 debug!("photo id {} title is empty, using timestamp `{}`", photo_id, tm);
-                reply.add(inode, idx, FileType::RegularFile, format!("[{}] {}.{}", photo_id, tm, extension));
+                reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", photo_id, tm, extension));
                 idx += 1;
             }
         };
@@ -230,13 +239,13 @@ impl ShotwellVFS {
             let title = statement.read::<Vec<u8>>(3).map_err(|_|()).and_then(|x| String::from_utf8(x).map_err(|_|())).unwrap_or(String::new());
             if !title.is_empty() {
                 debug!("video id {} has utf name {:?}", video_id, title);
-                reply.add(inode, idx, FileType::RegularFile, format!("[{}] {}.{}", video_id, title, extension));
+                reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", video_id, title, extension));
                 idx += 1;
             } else {
                 let timestamp = time::at(time::Timespec{sec: statement.read::<i64>(2).unwrap(), nsec: 0});
                 let tm = timestamp.strftime("%Y-%m-%d %H:%M").unwrap();
                 debug!("video id {} title is empty, using timestamp `{}`", video_id, tm);
-                reply.add(inode, idx, FileType::RegularFile, format!("[{}] {}.{}", video_id, tm, extension));
+                reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", video_id, tm, extension));
                 idx += 1;
             }
         };
@@ -255,7 +264,7 @@ impl ShotwellVFS {
     }
 
     fn lookup_event(&mut self, name: &OsStr, reply: ReplyEntry) {
-        if let Some(id) = self.extract_id(name) {
+        if let Some(FileId::DirKind(id)) = self.extract_id(name) {
             let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
             let mut statement = connection.prepare("SELECT time_created FROM EventTable WHERE id = ?").unwrap();
             statement.bind(1, id as i64).unwrap();
@@ -269,7 +278,7 @@ impl ShotwellVFS {
     }
 
     fn lookup_tag(&mut self, name: &OsStr, reply: ReplyEntry) {
-        if let Some(id) = self.extract_id(name) {
+        if let Some(FileId::DirKind(id)) = self.extract_id(name) {
             let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
             let mut statement = connection.prepare("SELECT time_created FROM TagTable WHERE id = ?").unwrap();
             statement.bind(1, id as i64).unwrap();
@@ -284,7 +293,7 @@ impl ShotwellVFS {
 
 
     fn lookup_photo(&mut self, name: &OsStr, reply: ReplyEntry) {
-        if let Some(id) = self.extract_id(name) {
+        if let Some(FileId::FileKind(id)) = self.extract_id(name) {
             let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
             let mut statement = connection.prepare("SELECT filesize, timestamp FROM PhotoTable WHERE id = ?").unwrap();
             statement.bind(1, id as i64).unwrap();
@@ -299,7 +308,7 @@ impl ShotwellVFS {
     }
 
     fn lookup_video(&mut self, name: &OsStr, reply: ReplyEntry) {
-        if let Some(id) = self.extract_id(name) {
+        if let Some(FileId::FileKind(id)) = self.extract_id(name) {
             let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
             let mut statement = connection.prepare("SELECT filesize, timestamp FROM VideoTable WHERE id = ?").unwrap();
             statement.bind(1, id as i64).unwrap();
