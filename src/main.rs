@@ -5,6 +5,7 @@ extern crate sqlite;
 #[macro_use] extern crate log;
 extern crate env_logger;
 
+use std::path::Path;
 use std::ffi::OsStr;
 use time::Timespec;
 use libc::ENOENT;
@@ -105,9 +106,17 @@ fn make_fileattr(inode: u64, filesize: u64, ts: Timespec) -> FileAttr {
     }
 }
 
-struct ShotwellVFS;
+struct ShotwellVFS {
+    conn: sqlite::Connection,
+}
 
 impl ShotwellVFS {
+    fn new<T: AsRef<Path>>(path: T) -> Self {
+        ShotwellVFS {
+            conn: sqlite::open(path).unwrap(),
+        }
+    }
+
     fn extract_id(&self, filename: &OsStr) -> Option<FileId> {
         let filename = filename.to_str();
         match filename {
@@ -145,8 +154,7 @@ impl ShotwellVFS {
         }
         let mut idx = offset + 2;
 
-        let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
-        let mut statement = connection.prepare("SELECT id, name, time_created FROM EventTable ORDER BY time_created ASC LIMIT ?, 100").unwrap();
+        let mut statement = self.conn.prepare("SELECT id, name, time_created FROM EventTable ORDER BY time_created ASC LIMIT ?, 100").unwrap();
         statement.bind(1, offset).unwrap();
         while let Ok(sqlite::State::Row) = statement.next() {
             let event_id = statement.read::<i64>(0).unwrap() as u64;
@@ -178,8 +186,7 @@ impl ShotwellVFS {
         }
         let mut idx = offset + 2;
 
-        let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
-        let mut statement = connection.prepare("SELECT id, LTRIM(name, '/') as tname, time_created FROM TagTable WHERE INSTR(tname, '/') = 0 ORDER BY tname ASC LIMIT ?, 100").unwrap();
+        let mut statement = self.conn.prepare("SELECT id, LTRIM(name, '/') as tname, time_created FROM TagTable WHERE INSTR(tname, '/') = 0 ORDER BY tname ASC LIMIT ?, 100").unwrap();
         statement.bind(1, offset).unwrap();
         while let Ok(sqlite::State::Row) = statement.next() {
             let tag_id = statement.read::<i64>(0).unwrap() as u64;
@@ -208,8 +215,7 @@ impl ShotwellVFS {
             reply.add(ROOT, 1, FileType::Directory, "..");
         }
         let mut idx = offset + 2;
-        let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
-        let mut statement = connection.prepare("SELECT id, filename, timestamp, title FROM PhotoTable ORDER BY timestamp ASC, id ASC LIMIT ?, 100").unwrap();
+        let mut statement = self.conn.prepare("SELECT id, filename, timestamp, title FROM PhotoTable ORDER BY timestamp ASC, id ASC LIMIT ?, 100").unwrap();
         statement.bind(1, offset).unwrap();
         while let Ok(sqlite::State::Row) = statement.next() {
             let photo_id = statement.read::<i64>(0).unwrap() as u64;
@@ -242,8 +248,7 @@ impl ShotwellVFS {
             reply.add(ROOT, 1, FileType::Directory, "..");
         }
         let mut idx = offset + 2;
-        let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
-        let mut statement = connection.prepare("SELECT id, filename, timestamp, title FROM VideoTable ORDER BY timestamp ASC LIMIT ?, 100").unwrap();
+        let mut statement = self.conn.prepare("SELECT id, filename, timestamp, title FROM VideoTable ORDER BY timestamp ASC LIMIT ?, 100").unwrap();
         statement.bind(1, offset).unwrap();
         while let Ok(sqlite::State::Row) = statement.next() {
             let video_id = statement.read::<i64>(0).unwrap() as u64;
@@ -279,8 +284,7 @@ impl ShotwellVFS {
 
     fn lookup_event(&mut self, name: &OsStr, reply: ReplyEntry) {
         if let Some(FileId::DirKind(id)) = self.extract_id(name) {
-            let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
-            let mut statement = connection.prepare("SELECT time_created FROM EventTable WHERE id = ?").unwrap();
+            let mut statement = self.conn.prepare("SELECT time_created FROM EventTable WHERE id = ?").unwrap();
             statement.bind(1, id as i64).unwrap();
             if let Ok(sqlite::State::Row) = statement.next() {
                 let timestamp = time::Timespec{sec: statement.read::<i64>(0).unwrap(), nsec: 0};
@@ -293,8 +297,7 @@ impl ShotwellVFS {
 
     fn lookup_tag(&mut self, name: &OsStr, reply: ReplyEntry) {
         if let Some(FileId::DirKind(id)) = self.extract_id(name) {
-            let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
-            let mut statement = connection.prepare("SELECT time_created FROM TagTable WHERE id = ?").unwrap();
+            let mut statement = self.conn.prepare("SELECT time_created FROM TagTable WHERE id = ?").unwrap();
             statement.bind(1, id as i64).unwrap();
             if let Ok(sqlite::State::Row) = statement.next() {
                 let timestamp = time::Timespec{sec: statement.read::<i64>(0).unwrap(), nsec: 0};
@@ -308,8 +311,7 @@ impl ShotwellVFS {
 
     fn lookup_photo(&mut self, name: &OsStr, reply: ReplyEntry) {
         if let Some(FileId::FileKind(id)) = self.extract_id(name) {
-            let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
-            let mut statement = connection.prepare("SELECT filesize, timestamp FROM PhotoTable WHERE id = ?").unwrap();
+            let mut statement = self.conn.prepare("SELECT filesize, timestamp FROM PhotoTable WHERE id = ?").unwrap();
             statement.bind(1, id as i64).unwrap();
             if let Ok(sqlite::State::Row) = statement.next() {
                 let timestamp = time::Timespec{sec: statement.read::<i64>(1).unwrap(), nsec: 0};
@@ -323,8 +325,7 @@ impl ShotwellVFS {
 
     fn lookup_video(&mut self, name: &OsStr, reply: ReplyEntry) {
         if let Some(FileId::FileKind(id)) = self.extract_id(name) {
-            let connection = sqlite::open("/home/torkve/.local/share/shotwell/data/photo.db").unwrap();
-            let mut statement = connection.prepare("SELECT filesize, timestamp FROM VideoTable WHERE id = ?").unwrap();
+            let mut statement = self.conn.prepare("SELECT filesize, timestamp FROM VideoTable WHERE id = ?").unwrap();
             statement.bind(1, id as i64).unwrap();
             if let Ok(sqlite::State::Row) = statement.next() {
                 let timestamp = time::Timespec{sec: statement.read::<i64>(1).unwrap(), nsec: 0};
@@ -391,5 +392,5 @@ impl Filesystem for ShotwellVFS {
 fn main() {
     env_logger::init().unwrap();
     let mountpoint = std::env::args_os().nth(1).unwrap();
-    fuse::mount(ShotwellVFS, &mountpoint, &[]).unwrap();
+    fuse::mount(ShotwellVFS::new("/home/torkve/.local/share/shotwell/data/photo.db"), &mountpoint, &[]).unwrap();
 }
