@@ -4,9 +4,11 @@ extern crate time;
 extern crate libc;
 
 use std::path::Path;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::ffi::OsStr;
 use self::time::Timespec;
-use self::libc::ENOENT;
+use self::libc::{ENOENT, EINVAL};
 use self::fuse::{Filesystem, ReplyEntry, ReplyAttr, FileAttr, FileType};
 
 use sqlite_ex::{TextField, UnsignedField};
@@ -121,6 +123,20 @@ impl ShotwellVFS {
         if let Ok(sqlite::State::Row) = statement.next() {
             let timestamp = time::Timespec{sec: statement.read::<i64>(0).unwrap(), nsec: 0};
             reply.attr(&TTL, &make_dirattr(inode, timestamp));
+        } else {
+            reply.error(ENOENT);
+        }
+    }
+
+    fn getattr_photo(&mut self, inode: u64, mut reply: ReplyAttr) {
+        let mut statement = self.conn.prepare("SELECT exposure_time, filesize FROM PhotoTable WHERE id = ?").unwrap();
+        statement.bind(1, (inode & !PHOTO) as i64).unwrap();
+        if let Ok(sqlite::State::Row) = statement.next() {
+            let timestamp = time::Timespec{sec: statement.read::<i64>(0).unwrap(), nsec: 0};
+            let filesize = statement.read_u64(1).unwrap();
+            reply.attr(&TTL, &make_fileattr(inode, filesize, timestamp));
+        } else {
+            reply.error(ENOENT);
         }
     }
 
@@ -415,6 +431,7 @@ impl Filesystem for ShotwellVFS {
             TAG => reply.attr(&TTL, &TAG_ATTR),
             EVENT => reply.attr(&TTL, &EVENT_ATTR),
             x if x & TAG == TAG => self.getattr_tag(x, reply),
+            x if x & PHOTO == PHOTO => self.getattr_photo(x, reply),
             _ => reply.error(ENOENT),
         };
     }
@@ -422,7 +439,7 @@ impl Filesystem for ShotwellVFS {
     fn readdir(&mut self,
                _: &fuse::Request,
                inode: u64,
-               fh: u64,
+               _fh: u64,
                offset: i64,
                reply: fuse::ReplyDirectory,
                ) {
@@ -435,5 +452,49 @@ impl Filesystem for ShotwellVFS {
             x if x & TAG == TAG => self.readdir_tag_contents(inode, reply, offset),
             _ => reply.error(ENOENT)
         };
+    }
+
+    fn read(&mut self,
+            _: &fuse::Request,
+            inode: u64,
+            _fh: u64,
+            offset: i64,
+            size: u32,
+            reply: fuse::ReplyData,
+            ) {
+        if inode == PHOTO || inode & PHOTO != PHOTO || offset < 0 || size == 0 {
+            debug!("invalid inode {}, replying with ENOENT", inode);
+            reply.error(ENOENT);
+            return;
+        }
+
+        let photo_id = inode & !PHOTO;
+        let mut statement = self.conn.prepare("SELECT filename from PhotoTable WHERE id = ?").unwrap();
+        statement.bind(1, photo_id as i64).unwrap();
+        if let Ok(sqlite::State::Row) = statement.next() {
+            let filename = statement.read_text(0).unwrap();
+            debug!("Reading photo id {} from filename {}", photo_id, filename);
+            if let Ok(mut fd) = File::open(&filename) {
+                if let Ok(_) = fd.seek(SeekFrom::Start(offset as u64)) {
+                    let mut buf = vec![0u8; size as usize];
+                    if let Ok(bytes) = fd.take(size as u64).read(&mut buf) {
+                        debug!("replying with {} bytes", bytes);
+                        reply.data(&buf[..bytes]);
+                    } else {
+                        debug!("no data, replying with EINVAL");
+                        reply.error(EINVAL);
+                    }
+                } else {
+                    debug!("seek failed, replying with EINVAL");
+                    reply.error(EINVAL);
+                }
+            } else {
+                debug!("file open failed, replying with EINVAL");
+                reply.error(EINVAL);
+            }
+        } else {
+            debug!("database lookup failed, replying with ENOENT");
+            reply.error(ENOENT);
+        }
     }
 }
