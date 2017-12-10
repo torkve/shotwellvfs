@@ -7,9 +7,10 @@ keywords = ["fuse", "shotwell", "driver", "fs", "vfs"]
 license = "MIT"
 
 [dependencies]
-fuse = "*"
-sqlite = "*"
-libc = "*"
-time = "*"
-log = "*"
-env_logger = "*"
+fuse = "0.3"
+sqlite = "0.23"
+libc = "0.2"
+time = "0.1"
+log = "0.3"
+env_logger = "0.4"
+clap = "2.29"
