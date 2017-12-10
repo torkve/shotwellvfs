@@ -1,3 +1,4 @@
 ^target/
 glob:*.rs.bk
 ^Cargo.lock
+\.orig$
