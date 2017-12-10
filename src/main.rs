@@ -4,7 +4,7 @@ extern crate fuse;
 extern crate sqlite;
 #[macro_use] extern crate log;
 extern crate env_logger;
-extern crate clap;
+#[macro_use] extern crate clap;
 
 use std::path::Path;
 use std::ffi::OsStr;
@@ -456,7 +456,7 @@ impl Filesystem for ShotwellVFS {
 fn main() {
     env_logger::init().unwrap();
     let args = clap::App::new("Shotwell VFS")
-        .version("0.1")
+        .version(crate_version!())
         .author("Vsevolod Velichko <torkvemada@sorokdva.net")
         .about("Expose shotwell library as filesystem hierarchy")
         .arg(clap::Arg::with_name("db")
