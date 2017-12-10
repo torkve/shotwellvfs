@@ -129,6 +129,15 @@ impl ShotwellVFS {
         }
     }
 
+    fn getattr_tag(&mut self, inode: u64, mut reply: ReplyAttr) {
+        let mut statement = self.conn.prepare("SELECT time_created FROM TagTable WHERE id = ?").unwrap();
+        statement.bind(1, (inode & !TAG) as i64).unwrap();
+        if let Ok(sqlite::State::Row) = statement.next() {
+            let timestamp = time::Timespec{sec: statement.read::<i64>(0).unwrap(), nsec: 0};
+            reply.attr(&TTL, &make_dirattr(inode, timestamp));
+        }
+    }
+
     fn readdir_root(&mut self, mut reply: fuse::ReplyDirectory, offset: i64) {
         if offset != 0 {
             reply.error(ENOENT);
@@ -202,6 +211,48 @@ impl ShotwellVFS {
                 idx += 1;
             }
         };
+        reply.ok();
+    }
+
+    fn readdir_tag_contents(&mut self, inode: u64, mut reply: fuse::ReplyDirectory, offset: i64) {
+        if offset < 0 {
+            reply.error(ENOENT);
+            return;
+        }
+        if offset == 0 {
+            reply.add(TAG, 0, FileType::Directory, ".");
+            reply.add(ROOT, 1, FileType::Directory, "..");
+        }
+        let mut idx = offset + 2;
+
+        // FIXME we need to list subtags too
+        let mut statement = self.conn.prepare("SELECT photo_id_list FROM TagTable WHERE id = ?").unwrap();
+        debug!("readdir for tag id {}", (inode & !TAG) as i64);
+        statement.bind(1, (inode & !TAG) as i64).unwrap();
+        if let Ok(sqlite::State::Row) = statement.next() {
+            for photo_id in statement.read_text(0).split(',').map(|id| id.parse::<u64>()).filter(|id| id.is_ok()).map(|id| id.unwrap()).skip(offset as usize).take(100) {
+                debug!("checking photo id {}", photo_id);
+                let mut statement2 = self.conn.prepare("SELECT filename, timestamp, title FROM PhotoTable WHERE id = ?").unwrap();
+                statement2.bind(1, photo_id as i64).unwrap();
+                if let Ok(sqlite::State::Row) = statement2.next() {
+                    let inode = photo_id | PHOTO;
+                    let filename = statement2.read_text(0);
+                    let extension = filename.rfind('.').map(|x| &filename[x+1..]).unwrap_or("");
+                    let title = statement2.read_text(2);
+                    if !title.is_empty() {
+                        debug!("photo id {} has utf name {:?}", photo_id, title);
+                        reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", photo_id, title, extension));
+                        idx += 1;
+                    } else {
+                        let timestamp = time::at(time::Timespec{sec: statement2.read::<i64>(1).unwrap(), nsec: 0});
+                        let tm = timestamp.strftime("%Y-%m-%d %H:%M").unwrap();
+                        debug!("photo id {} title is empty, using timestamp `{}`", photo_id, tm);
+                        reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", photo_id, tm, extension));
+                        idx += 1;
+                    }
+                }
+            }
+        }
         reply.ok();
     }
 
@@ -296,18 +347,27 @@ impl ShotwellVFS {
     }
 
     fn lookup_tag(&mut self, name: &OsStr, reply: ReplyEntry) {
-        if let Some(FileId::DirKind(id)) = self.extract_id(name) {
-            let mut statement = self.conn.prepare("SELECT time_created FROM TagTable WHERE id = ?").unwrap();
-            statement.bind(1, id as i64).unwrap();
-            if let Ok(sqlite::State::Row) = statement.next() {
-                let timestamp = time::Timespec{sec: statement.read::<i64>(0).unwrap(), nsec: 0};
-                reply.entry(&TTL, &make_dirattr(TAG | id, timestamp), 0);
-                return;
-            }
-        }
-        reply.error(ENOENT);
+        match self.extract_id(name) {
+            Some(FileId::DirKind(id)) => {
+                let mut statement = self.conn.prepare("SELECT time_created FROM TagTable WHERE id = ?").unwrap();
+                statement.bind(1, id as i64).unwrap();
+                if let Ok(sqlite::State::Row) = statement.next() {
+                    let timestamp = time::Timespec{sec: statement.read::<i64>(0).unwrap(), nsec: 0};
+                    reply.entry(&TTL, &make_dirattr(TAG | id, timestamp), 0);
+                }
+            },
+            Some(FileId::FileKind(id)) => {
+                let mut statement = self.conn.prepare("SELECT filesize, timestamp FROM PhotoTable WHERE id = ?").unwrap();
+                statement.bind(1, id as i64).unwrap();
+                if let Ok(sqlite::State::Row) = statement.next() {
+                    let timestamp = time::Timespec{sec: statement.read::<i64>(1).unwrap(), nsec: 0};
+                    let filesize = statement.read::<i64>(0).unwrap() as u64;
+                    reply.entry(&TTL, &make_fileattr(PHOTO | id, filesize, timestamp), 0);
+                }
+            },
+            _ => reply.error(ENOENT),
+        };
     }
-
 
     fn lookup_photo(&mut self, name: &OsStr, reply: ReplyEntry) {
         if let Some(FileId::FileKind(id)) = self.extract_id(name) {
@@ -352,6 +412,7 @@ impl Filesystem for ShotwellVFS {
             PHOTO => self.lookup_photo(name, reply),
             VIDEO => self.lookup_video(name, reply),
             TAG => self.lookup_tag(name, reply),
+            x if x & TAG == TAG => self.lookup_tag(name, reply),
             _ => reply.error(ENOENT),
         };
     }
@@ -367,6 +428,7 @@ impl Filesystem for ShotwellVFS {
             VIDEO => reply.attr(&TTL, &VIDEO_ATTR),
             TAG => reply.attr(&TTL, &TAG_ATTR),
             EVENT => reply.attr(&TTL, &EVENT_ATTR),
+            x if x & TAG == TAG => self.getattr_tag(x, reply),
             _ => reply.error(ENOENT),
         };
     }
@@ -384,6 +446,7 @@ impl Filesystem for ShotwellVFS {
             VIDEO => self.readdir_videos(reply, offset),
             TAG => self.readdir_tags(reply, offset),
             EVENT => self.readdir_events(reply, offset),
+            x if x & TAG == TAG => self.readdir_tag_contents(inode, reply, offset),
             _ => reply.error(ENOENT)
         };
     }
