@@ -6,6 +6,9 @@ extern crate sqlite;
 extern crate env_logger;
 #[macro_use] extern crate clap;
 
+mod sqlite_ex;
+
+use sqlite_ex::{TextField, UnsignedField};
 use std::path::Path;
 use std::ffi::OsStr;
 use time::Timespec;
@@ -26,20 +29,6 @@ enum FileId {
     DirKind(u64),
     VideoKind(u64),
 }
-
-trait TextField {
-    fn read_text(&self, i: usize) -> String;
-}
-
-impl<'l> TextField for sqlite::Statement<'l> {
-    fn read_text(&self, i: usize) -> String {
-        match self.read::<Vec<u8>>(i) {
-            Err(_) => String::new(),
-            Ok(x) => String::from_utf8(x).unwrap_or(String::new())
-        }
-    }
-}
-
 
 macro_rules! dir_attr(
     ( $($name:ident => $inode:ident),* ) => {
@@ -167,9 +156,9 @@ impl ShotwellVFS {
         let mut statement = self.conn.prepare("SELECT id, name, time_created FROM EventTable ORDER BY time_created ASC LIMIT ?, 100").unwrap();
         statement.bind(1, offset).unwrap();
         while let Ok(sqlite::State::Row) = statement.next() {
-            let event_id = statement.read::<i64>(0).unwrap() as u64;
+            let event_id = statement.read_u64(0).unwrap();
             let inode = event_id | EVENT;
-            let name = statement.read_text(1);
+            let name = statement.read_text(1).unwrap_or(String::new());
             if !name.is_empty() {
                 debug!("event id {} has utf name {:?}", event_id, name);
                 reply.add(inode, idx, FileType::Directory, format!("[{}] {}", event_id, name));
@@ -199,9 +188,9 @@ impl ShotwellVFS {
         let mut statement = self.conn.prepare("SELECT id, LTRIM(name, '/') as tname, time_created FROM TagTable WHERE INSTR(tname, '/') = 0 ORDER BY tname ASC LIMIT ?, 100").unwrap();
         statement.bind(1, offset).unwrap();
         while let Ok(sqlite::State::Row) = statement.next() {
-            let tag_id = statement.read::<i64>(0).unwrap() as u64;
+            let tag_id = statement.read_u64(0).unwrap();
             let inode = tag_id | EVENT;
-            let name = statement.read_text(1);
+            let name = statement.read_text(1).unwrap_or(String::new());
             if !name.is_empty() {
                 let mut title = &name[..];
                 if title.starts_with('/') {
@@ -231,15 +220,15 @@ impl ShotwellVFS {
         debug!("readdir for tag id {}", (inode & !TAG) as i64);
         statement.bind(1, (inode & !TAG) as i64).unwrap();
         if let Ok(sqlite::State::Row) = statement.next() {
-            for photo_id in statement.read_text(0).split(',').map(|id| id.parse::<u64>()).filter(|id| id.is_ok()).map(|id| id.unwrap()).skip(offset as usize).take(100) {
+            for photo_id in statement.read_text(0).unwrap_or(String::new()).split(',').map(|id| id.parse::<u64>()).filter(|id| id.is_ok()).map(|id| id.unwrap()).skip(offset as usize).take(100) {
                 debug!("checking photo id {}", photo_id);
                 let mut statement2 = self.conn.prepare("SELECT filename, timestamp, title FROM PhotoTable WHERE id = ?").unwrap();
                 statement2.bind(1, photo_id as i64).unwrap();
                 if let Ok(sqlite::State::Row) = statement2.next() {
                     let inode = photo_id | PHOTO;
-                    let filename = statement2.read_text(0);
+                    let filename = statement2.read_text(0).unwrap_or(String::new());
                     let extension = filename.rfind('.').map(|x| &filename[x+1..]).unwrap_or("");
-                    let title = statement2.read_text(2);
+                    let title = statement2.read_text(2).unwrap_or(String::new());
                     if !title.is_empty() {
                         debug!("photo id {} has utf name {:?}", photo_id, title);
                         reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", photo_id, title, extension));
@@ -270,11 +259,11 @@ impl ShotwellVFS {
         let mut statement = self.conn.prepare("SELECT id, filename, timestamp, title FROM PhotoTable ORDER BY timestamp ASC, id ASC LIMIT ?, 100").unwrap();
         statement.bind(1, offset).unwrap();
         while let Ok(sqlite::State::Row) = statement.next() {
-            let photo_id = statement.read::<i64>(0).unwrap() as u64;
+            let photo_id = statement.read_u64(0).unwrap();
             let inode = photo_id | PHOTO;
-            let filename = statement.read_text(1);
+            let filename = statement.read_text(1).unwrap_or(String::new());
             let extension = filename.rfind('.').map(|x| &filename[x+1..]).unwrap_or("");
-            let title = statement.read_text(3);
+            let title = statement.read_text(3).unwrap_or(String::new());
             if !title.is_empty() {
                 debug!("photo id {} has utf name {:?}", photo_id, title);
                 reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", photo_id, title, extension));
@@ -303,11 +292,11 @@ impl ShotwellVFS {
         let mut statement = self.conn.prepare("SELECT id, filename, timestamp, title FROM VideoTable ORDER BY timestamp ASC LIMIT ?, 100").unwrap();
         statement.bind(1, offset).unwrap();
         while let Ok(sqlite::State::Row) = statement.next() {
-            let video_id = statement.read::<i64>(0).unwrap() as u64;
+            let video_id = statement.read_u64(0).unwrap();
             let inode = video_id | VIDEO;
-            let filename = statement.read_text(1);
+            let filename = statement.read_text(1).unwrap_or(String::new());
             let extension = filename.rfind('.').map(|x| &filename[x+1..]).unwrap_or("");
-            let title = statement.read_text(3);
+            let title = statement.read_text(3).unwrap_or(String::new());
             if !title.is_empty() {
                 debug!("video id {} has utf name {:?}", video_id, title);
                 reply.add(inode, idx, FileType::RegularFile, format!("({}) {}.{}", video_id, title, extension));
@@ -362,7 +351,7 @@ impl ShotwellVFS {
                 statement.bind(1, id as i64).unwrap();
                 if let Ok(sqlite::State::Row) = statement.next() {
                     let timestamp = time::Timespec{sec: statement.read::<i64>(1).unwrap(), nsec: 0};
-                    let filesize = statement.read::<i64>(0).unwrap() as u64;
+                    let filesize = statement.read_u64(0).unwrap();
                     reply.entry(&TTL, &make_fileattr(PHOTO | id, filesize, timestamp), 0);
                 }
             },
@@ -376,7 +365,7 @@ impl ShotwellVFS {
             statement.bind(1, id as i64).unwrap();
             if let Ok(sqlite::State::Row) = statement.next() {
                 let timestamp = time::Timespec{sec: statement.read::<i64>(1).unwrap(), nsec: 0};
-                let filesize = statement.read::<i64>(0).unwrap() as u64;
+                let filesize = statement.read_u64(0).unwrap();
                 reply.entry(&TTL, &make_fileattr(PHOTO | id, filesize, timestamp), 0);
                 return;
             }
@@ -390,7 +379,7 @@ impl ShotwellVFS {
             statement.bind(1, id as i64).unwrap();
             if let Ok(sqlite::State::Row) = statement.next() {
                 let timestamp = time::Timespec{sec: statement.read::<i64>(1).unwrap(), nsec: 0};
-                let filesize = statement.read::<i64>(0).unwrap() as u64;
+                let filesize = statement.read_u64(0).unwrap();
                 reply.entry(&TTL, &make_fileattr(VIDEO | id, filesize, timestamp), 0);
                 return;
             }
