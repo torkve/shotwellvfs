@@ -1,10 +1,20 @@
 [package]
 name = "shotwellvfs"
-description = "Shotwell FUSE adapter"
 version = "0.1.0"
+description = "Shotwell FUSE adapter"
 authors = ["Vsevolod Velichko <torkvemada@sorokdva.net>"]
 keywords = ["fuse", "shotwell", "driver", "fs", "vfs"]
+categories = ["filesystem", "multimedia::images", "os::unix-apis"]
 license = "MIT"
+exclude = [
+    "Cargo.toml.orig",
+    "**/*.orig",
+]
+repository = "https://github.com/torkve/shotwellvfs"
+readme = "README.md"
+
+[badges]
+travis-ci = { repository = "torkve/shotwellvfs", branch = "master" }
 
 [dependencies]
 fuse = "0.3"
